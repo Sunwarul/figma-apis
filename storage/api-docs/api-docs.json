@@ -1,0 +1,65 @@
+{
+    "openapi": "3.0.0",
+    "info": {
+        "title": "Figma APIs",
+        "description": "API for converting Figma variables to Tailwind config",
+        "version": "1.0.0"
+    },
+    "paths": {
+        "/api/figma/tailwind-config": {
+            "post": {
+                "tags": [
+                    "Figma"
+                ],
+                "summary": "Generate Tailwind config from Figma variables",
+                "operationId": "075050547ebba582beb51ee4478fd02a",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "fileKey"
+                                ],
+                                "properties": {
+                                    "fileKey": {
+                                        "type": "string",
+                                        "example": "6uZ8mS1F4Oi7aL0VJLau49"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Tailwind config JS string",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "config": {
+                                            "type": "string",
+                                            "example": "module.exports = { theme: { colors: { ... } } };"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request"
+                    }
+                }
+            }
+        }
+    },
+    "tags": [
+        {
+            "name": "Figma",
+            "description": "Figma"
+        }
+    ]
+}
