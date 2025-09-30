@@ -19,12 +19,17 @@
                         "application/json": {
                             "schema": {
                                 "required": [
-                                    "fileKey"
+                                    "fileKey",
+                                    "nodeIds"
                                 ],
                                 "properties": {
                                     "fileKey": {
                                         "type": "string",
                                         "example": "6uZ8mS1F4Oi7aL0VJLau49"
+                                    },
+                                    "nodeIds": {
+                                        "type": "string",
+                                        "example": "13191-107467"
                                     }
                                 },
                                 "type": "object"

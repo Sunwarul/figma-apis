@@ -69,16 +69,6 @@ class FigmaFetchNodesWithImageController extends Controller
             return response()->json(['error' => 'Figma token not configured'], 500);
         }
 
-        // Support both string and array for nodeIds
-        if (is_string($nodeIds)) {
-            $nodeIds = [$nodeIds];
-        }
-
-        // Normalize node IDs (Figma uses colon internally)
-        $normalizedNodeIds = array_map(function ($id) {
-            return str_replace('-', ':', $id);
-        }, $nodeIds);
-
         // Step 1: Fetch all image fills from the file
         Log::info('Fetching image fills from Figma', ['fileKey' => $fileKey]);
         $imageFills = $this->fetchImageFills($fileKey, $figmaToken);
@@ -89,9 +79,9 @@ class FigmaFetchNodesWithImageController extends Controller
         Log::info('Images downloaded and stored', ['count' => count($imageUrlMap)]);
 
         // Step 3: Fetch node data
-        $encodedNodeIds = array_map('urlencode', $normalizedNodeIds);
-        $idsParam = implode(',', $encodedNodeIds);
-        $url = "https://api.figma.com/v1/files/{$fileKey}/nodes?ids={$idsParam}";
+
+
+        $url = "https://api.figma.com/v1/files/{$fileKey}/nodes?ids={$nodeIds}";
 
         $response = Http::withHeaders([
             'x-figma-token' => $figmaToken,
@@ -110,21 +100,26 @@ class FigmaFetchNodesWithImageController extends Controller
         }
 
         $data = $response->json();
+
         $attributes = $this->getAttributesToKeep();
         $result = [];
         $imagesProcessed = 0;
 
         // Step 4: Process nodes and inject image URLs
-        foreach ($normalizedNodeIds as $normalizedNodeId) {
-            if (!isset($data['nodes'][$normalizedNodeId]['document'])) {
-                Log::warning("Node ID '{$normalizedNodeId}' not found in Figma response.");
-                continue;
+
+        $nodeIds = \str_replace('-', ':', $nodeIds);
+
+        if(isset($data['nodes'][$nodeIds]['document'])) {
+            if (!isset($data['nodes'][$nodeIds]['document'])) {
+                Log::warning("Node ID '{$nodeIds}' not found in Figma response.");
             }
-            $rootNode = $data['nodes'][$normalizedNodeId]['document'];
+            $rootNode = $data['nodes'][$nodeIds]['document'];
             $processedNodes = 0;
             $minimizedNode = $this->minimizeNodeWithImages($rootNode, $attributes, $processedNodes, $imageUrlMap, $imagesProcessed);
             $result[] = $minimizedNode;
         }
+
+        // dd($result, $imagesProcessed);
 
         return response()->json([
             'nodes' => $result,
@@ -155,13 +150,13 @@ class FigmaFetchNodesWithImageController extends Controller
 
         $json = $response->json();
 
-        if (!isset($json['images']) || empty($json['images'])) {
+        $imageFills = $json['meta']['images'];
+
+        if (!isset($imageFills) || empty($imageFills)) {
             Log::info('No images found in file');
             return [];
         }
-
-        // Return mapping of imageRef => downloadUrl
-        return $json['images'];
+        return $imageFills;
     }
 
     /**
@@ -283,7 +278,9 @@ class FigmaFetchNodesWithImageController extends Controller
         // Check if this node has an image fill
         $imageRef = $this->hasImageFill($node);
 
-        if ($imageRef && isset($imageUrlMap[$imageRef])) {
+
+        if ($imageRef) {
+        // if ($imageRef && isset($imageUrlMap[$imageRef])) {
             // Add the local image URL to this node
             $minimized['image_url'] = $imageUrlMap[$imageRef];
             $imagesProcessed++;
