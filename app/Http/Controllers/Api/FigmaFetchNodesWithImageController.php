@@ -9,6 +9,7 @@ namespace App\Http\Controllers\Api;
  *     description="API for converting Figma variables to Tailwind config"
  * )
  */
+
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -29,9 +30,10 @@ class FigmaFetchNodesWithImageController extends Controller
      *         required=true,
      *
      *         @OA\JsonContent(
-     *             required={"fileKey"},
+     *             required={"fileKey", "nodeIds"},
      *
-     *             @OA\Property(property="fileKey", type="string", example="6uZ8mS1F4Oi7aL0VJLau49")
+     *             @OA\Property(property="fileKey", type="string", example="6uZ8mS1F4Oi7aL0VJLau49"),
+     *             @OA\Property(property="nodeIds", type="string", example="13191-107467"),
      *         )
      *     ),
      *
@@ -41,11 +43,14 @@ class FigmaFetchNodesWithImageController extends Controller
      *
      *         @OA\JsonContent(
      *
-     *             @OA\Property(property="config", type="string", example="module.exports = { theme: { colors: { ... } } };")
+     *             @OA\Property(property="nodes", type="array", @OA\Items(type="object")),
+     *             @OA\Property(property="message", type="string", example="Successfully processed nodes with images"),
+     *             @OA\Property(property="images_processed", type="integer", example=5)
      *         )
      *     ),
      *
-     *     @OA\Response(response=400, description="Bad request")
+     *     @OA\Response(response=400, description="Bad request"),
+     *     @OA\Response(response=500, description="Server error")
      * )
      */
     public function generate(Request $request)
@@ -70,10 +75,20 @@ class FigmaFetchNodesWithImageController extends Controller
         }
 
         // Normalize node IDs (Figma uses colon internally)
-        $normalizedNodeIds = array_map(function($id) {
+        $normalizedNodeIds = array_map(function ($id) {
             return str_replace('-', ':', $id);
         }, $nodeIds);
 
+        // Step 1: Fetch all image fills from the file
+        Log::info('Fetching image fills from Figma', ['fileKey' => $fileKey]);
+        $imageFills = $this->fetchImageFills($fileKey, $figmaToken);
+        Log::info('Image fills fetched', ['count' => count($imageFills)]);
+
+        // Step 2: Download and store all images locally
+        $imageUrlMap = $this->downloadAllImages($imageFills, $fileKey);
+        Log::info('Images downloaded and stored', ['count' => count($imageUrlMap)]);
+
+        // Step 3: Fetch node data
         $encodedNodeIds = array_map('urlencode', $normalizedNodeIds);
         $idsParam = implode(',', $encodedNodeIds);
         $url = "https://api.figma.com/v1/files/{$fileKey}/nodes?ids={$idsParam}";
@@ -97,7 +112,9 @@ class FigmaFetchNodesWithImageController extends Controller
         $data = $response->json();
         $attributes = $this->getAttributesToKeep();
         $result = [];
+        $imagesProcessed = 0;
 
+        // Step 4: Process nodes and inject image URLs
         foreach ($normalizedNodeIds as $normalizedNodeId) {
             if (!isset($data['nodes'][$normalizedNodeId]['document'])) {
                 Log::warning("Node ID '{$normalizedNodeId}' not found in Figma response.");
@@ -105,109 +122,192 @@ class FigmaFetchNodesWithImageController extends Controller
             }
             $rootNode = $data['nodes'][$normalizedNodeId]['document'];
             $processedNodes = 0;
-            $minimizedNode = $this->minimizeNodeWithImages($rootNode, $attributes, $processedNodes, $fileKey);
+            $minimizedNode = $this->minimizeNodeWithImages($rootNode, $attributes, $processedNodes, $imageUrlMap, $imagesProcessed);
             $result[] = $minimizedNode;
         }
 
-        return response()->json(['nodes' => $result]);
+        return response()->json([
+            'nodes' => $result,
+            'message' => 'Successfully processed nodes with images',
+            'images_processed' => $imagesProcessed
+        ]);
     }
 
-    // --- (minimizeNode, outputFileStats, formatBytes, and getAttributesToKeep methods remain unchanged) ---
+    /**
+     * Fetch all image fills from Figma file
+     * GET /v1/files/:key/images
+     */
+    private function fetchImageFills($fileKey, $figmaToken): array
+    {
+        $url = "https://api.figma.com/v1/files/{$fileKey}/images";
+
+        $response = Http::withHeaders([
+            'x-figma-token' => $figmaToken,
+        ])->timeout(60)->get($url);
+
+        if (!$response->successful()) {
+            Log::error('Failed to fetch image fills', [
+                'status' => $response->status(),
+                'body' => $response->body(),
+            ]);
+            return [];
+        }
+
+        $json = $response->json();
+
+        if (!isset($json['images']) || empty($json['images'])) {
+            Log::info('No images found in file');
+            return [];
+        }
+
+        // Return mapping of imageRef => downloadUrl
+        return $json['images'];
+    }
 
     /**
-     * Recursively minimizes the Figma node data.
+     * Download all images and store them locally
      */
-    private function minimizeNode(array $node, array $attributesToKeep, int &$processedNodes): array
+    private function downloadAllImages(array $imageFills, $fileKey): array
     {
-        // Legacy minimization (no image handling)
-        $processedNodes++;
-        $minimized = [];
-        foreach ($attributesToKeep as $key) {
-            if (isset($node[$key])) {
-                $minimized[$key] = $node[$key];
-            }
+        $imageUrlMap = [];
+
+        if (empty($imageFills)) {
+            return $imageUrlMap;
         }
-        if (isset($minimized['children']) && is_array($minimized['children'])) {
-            $minimizedChildren = [];
-            foreach ($minimized['children'] as $child) {
-                if (is_array($child)) {
-                    $minimizedChildren[] = $this->minimizeNode($child, $attributesToKeep, $processedNodes);
+
+        // Ensure the figma directory exists
+        $figmaDir = public_path('figma');
+        if (!file_exists($figmaDir)) {
+            mkdir($figmaDir, 0755, true);
+            Log::info('Created figma directory', ['path' => $figmaDir]);
+        }
+
+        foreach ($imageFills as $imageRef => $downloadUrl) {
+            if (!$downloadUrl) {
+                Log::warning("Empty download URL for imageRef: {$imageRef}");
+                continue;
+            }
+
+            try {
+                Log::info('Downloading image', ['imageRef' => $imageRef, 'url' => $downloadUrl]);
+
+                // Download image from Figma
+                $imageResponse = Http::timeout(60)->get($downloadUrl);
+
+                if (!$imageResponse->successful()) {
+                    Log::error('Failed to download image', [
+                        'imageRef' => $imageRef,
+                        'status' => $imageResponse->status(),
+                    ]);
+                    continue;
                 }
+
+                // Detect image format from content-type or URL
+                $contentType = $imageResponse->header('Content-Type');
+                $ext = 'png'; // default
+
+                if (strpos($contentType, 'jpeg') !== false || strpos($contentType, 'jpg') !== false) {
+                    $ext = 'jpg';
+                } elseif (strpos($contentType, 'png') !== false) {
+                    $ext = 'png';
+                } elseif (strpos($contentType, 'gif') !== false) {
+                    $ext = 'gif';
+                } elseif (strpos($contentType, 'webp') !== false) {
+                    $ext = 'webp';
+                }
+
+                // Create safe filename from imageRef
+                $safeImageRef = preg_replace('/[^a-zA-Z0-9_-]/', '_', $imageRef);
+                $filename = "{$fileKey}_{$safeImageRef}.{$ext}";
+                $publicPath = public_path("figma/{$filename}");
+
+                // Save image
+                file_put_contents($publicPath, $imageResponse->body());
+
+                // Store the public URL mapped to imageRef
+                $publicUrl = url("/figma/{$filename}");
+                $imageUrlMap[$imageRef] = $publicUrl;
+
+                Log::info('Image stored successfully', [
+                    'imageRef' => $imageRef,
+                    'path' => $publicPath,
+                    'url' => $publicUrl
+                ]);
+            } catch (\Exception $e) {
+                Log::error('Exception while downloading/storing image', [
+                    'imageRef' => $imageRef,
+                    'error' => $e->getMessage(),
+                    'trace' => $e->getTraceAsString()
+                ]);
             }
-            $minimized['children'] = $minimizedChildren;
         }
-        return $minimized;
+
+        return $imageUrlMap;
     }
 
     /**
-     * Minimizes node and adds image_url for image nodes.
+     * Check if a node contains image fills
      */
-    private function minimizeNodeWithImages(array $node, array $attributesToKeep, int &$processedNodes, $fileKey): array
+    private function hasImageFill(array $node): ?string
+    {
+        // Check if node has fills property
+        if (!isset($node['fills']) || !is_array($node['fills'])) {
+            return null;
+        }
+
+        // Look for IMAGE type fill with imageRef
+        foreach ($node['fills'] as $fill) {
+            if (isset($fill['type']) && $fill['type'] === 'IMAGE' && isset($fill['imageRef'])) {
+                return $fill['imageRef'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Minimizes node and adds image_url for nodes with image fills
+     */
+    private function minimizeNodeWithImages(array $node, array $attributesToKeep, int &$processedNodes, array $imageUrlMap, int &$imagesProcessed): array
     {
         $processedNodes++;
         $minimized = [];
+
+        // Keep only essential attributes
         foreach ($attributesToKeep as $key) {
             if (isset($node[$key])) {
                 $minimized[$key] = $node[$key];
             }
         }
-        // If node is an image, fetch and store image
-        if (isset($minimized['type']) && strtoupper($minimized['type']) === 'IMAGE') {
-            $imageUrl = $this->fetchAndStoreFigmaImage($fileKey, $minimized['id']);
-            if ($imageUrl) {
-                $minimized['image_url'] = $imageUrl;
-            }
+
+        // Check if this node has an image fill
+        $imageRef = $this->hasImageFill($node);
+
+        if ($imageRef && isset($imageUrlMap[$imageRef])) {
+            // Add the local image URL to this node
+            $minimized['image_url'] = $imageUrlMap[$imageRef];
+            $imagesProcessed++;
+
+            Log::info('Added image_url to node', [
+                'node_id' => $minimized['id'] ?? 'unknown',
+                'node_name' => $minimized['name'] ?? 'unknown',
+                'imageRef' => $imageRef,
+                'image_url' => $minimized['image_url']
+            ]);
         }
+
         // Recursively minimize children
         if (isset($minimized['children']) && is_array($minimized['children'])) {
             $minimizedChildren = [];
             foreach ($minimized['children'] as $child) {
                 if (is_array($child)) {
-                    $minimizedChildren[] = $this->minimizeNodeWithImages($child, $attributesToKeep, $processedNodes, $fileKey);
+                    $minimizedChildren[] = $this->minimizeNodeWithImages($child, $attributesToKeep, $processedNodes, $imageUrlMap, $imagesProcessed);
                 }
             }
             $minimized['children'] = $minimizedChildren;
         }
-        return $minimized;
-    }
 
-    /**
-     * Fetches image from Figma and stores in public storage, returns public URL.
-     */
-    private function fetchAndStoreFigmaImage($fileKey, $nodeId)
-    {
-        $figmaToken = env('FIGMA_TOKEN');
-        $url = "https://api.figma.com/v1/images/{$fileKey}?ids=" . urlencode($nodeId);
-        $response = Http::withHeaders([
-            'x-figma-token' => $figmaToken,
-        ])->timeout(60)->get($url);
-        if (!$response->successful()) {
-            Log::error('Failed to fetch Figma image', [
-                'status' => $response->status(),
-                'body' => $response->body(),
-                'url' => $url,
-            ]);
-            return null;
-        }
-        $json = $response->json();
-        if (!isset($json['images'][$nodeId])) {
-            Log::warning("No image URL for node {$nodeId}");
-            return null;
-        }
-        $remoteImageUrl = $json['images'][$nodeId];
-        // Download image
-        $imageResponse = Http::timeout(60)->get($remoteImageUrl);
-        if (!$imageResponse->successful()) {
-            Log::error('Failed to download image from Figma', [
-                'status' => $imageResponse->status(),
-                'url' => $remoteImageUrl,
-            ]);
-            return null;
-        }
-        $ext = 'png'; // Figma default
-        $filename = "figma/{$fileKey}_{$nodeId}.{$ext}";
-        Storage::disk('public')->put($filename, $imageResponse->body());
-        return asset("storage/{$filename}");
+        return $minimized;
     }
 
     /**
