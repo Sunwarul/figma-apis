@@ -6,13 +6,13 @@
         "version": "1.0.0"
     },
     "paths": {
-        "/api/figma/tailwind-config": {
+        "/api/figma/fetch-nodes-with-image": {
             "post": {
                 "tags": [
                     "Figma"
                 ],
-                "summary": "Generate Tailwind config from Figma variables",
-                "operationId": "075050547ebba582beb51ee4478fd02a",
+                "summary": "Generate node and image URLs for Figma nodes",
+                "operationId": "b1a7b48d3bf0be453f93ccf97865a86a",
                 "requestBody": {
                     "required": true,
                     "content": {
@@ -34,7 +34,7 @@
                 },
                 "responses": {
                     "200": {
-                        "description": "Tailwind config JS string",
+                        "description": "JSON Response with node and image URLs",
                         "content": {
                             "application/json": {
                                 "schema": {
@@ -42,6 +42,60 @@
                                         "config": {
                                             "type": "string",
                                             "example": "module.exports = { theme: { colors: { ... } } };"
+                                        }
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request"
+                    }
+                }
+            }
+        },
+        "/api/figma/tailwind-config": {
+            "post": {
+                "tags": [
+                    "Figma"
+                ],
+                "summary": "Generate Tailwind config from Figma variables",
+                "operationId": "075a41689e61a99b0c41b2d5adc45a64",
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "required": [
+                                    "fileKey",
+                                    "nodeIds"
+                                ],
+                                "properties": {
+                                    "fileKey": {
+                                        "type": "string",
+                                        "example": "6uZ8mS1F4Oi7aL0VJLau49"
+                                    },
+                                    "nodeIds": {
+                                        "type": "string",
+                                        "example": "13191-107467"
+                                    }
+                                },
+                                "type": "object"
+                            }
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": "JSON Response contains node ids, and image URLs",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "properties": {
+                                        "data": {
+                                            "type": "string",
+                                            "example": ""
                                         }
                                     },
                                     "type": "object"

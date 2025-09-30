@@ -1,14 +1,6 @@
 <?php
 
-namespace App\Http\Controllers\Figma;
-
-/**
- * @OA\Info(
- *     version="1.0.0",
- *     title="Figma APIs",
- *     description="API for converting Figma variables to Tailwind config"
- * )
- */
+namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
@@ -28,19 +20,19 @@ class TailwindConfigController extends Controller
      *         required=true,
      *
      *         @OA\JsonContent(
-     *             required={"fileKey"},
+     *             required={"fileKey", "nodeIds"},
      *
-     *             @OA\Property(property="fileKey", type="string", example="6uZ8mS1F4Oi7aL0VJLau49")
+     *             @OA\Property(property="fileKey", type="string", example="6uZ8mS1F4Oi7aL0VJLau49"),
+     *             @OA\Property(property="nodeIds", type="string", example="13191-107467")
      *         )
      *     ),
      *
      *     @OA\Response(
      *         response=200,
-     *         description="Tailwind config JS string",
+     *         description="JSON Response contains node ids, and image URLs",
      *
      *         @OA\JsonContent(
-     *
-     *             @OA\Property(property="config", type="string", example="module.exports = { theme: { colors: { ... } } };")
+     *             @OA\Property(property="data", type="string", example="")
      *         )
      *     ),
      *
